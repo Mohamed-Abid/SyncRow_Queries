@@ -1,0 +1,123 @@
+steps:
+  # Step 1: Clone the query repository
+  - name: 'gcr.io/cloud-builders/git'
+    id: 'clone-queries'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "Cloning with token..."
+        git clone https://$_GITHUB_USERNAME:$$_GITHUB_TOKEN@github.com/$_QUERIES_REPO
+    secretEnv: ['_GITHUB_TOKEN']
+
+  # Step 2: Switch to the specified branch
+  - name: 'gcr.io/cloud-builders/git'
+    id: 'switch-queries-branch'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        cd SyncRow_Queries
+        git checkout $_QUERIES_BRANCH
+        echo "Checked out branch: $_QUERIES_BRANCH"
+
+  # Step 3: Get backend service URL
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'get-backend-url'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        gcloud run services describe $_BACKEND_SERVICE_NAME --region=$_REGION --project=$_PROJECT_ID --format='value(status.url)' > /workspace/backend_url.txt
+        cat /workspace/backend_url.txt
+
+  # Step 4: Process SQL files in topological order and send to backend API
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'process-sql-files'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        # Navigate to the base directory
+        cd /workspace/SyncRow_Queries/app/data/test
+        
+        # Step 1: Call the topological-sort API to get the execution order
+        response=$(curl -X GET \
+          -H "Content-Type: application/json" \
+          "$$(cat /workspace/backend_url.txt)/topological-sort?project_name=test")
+        
+        # Check if response contains "success" status
+        if echo "$response" | grep -q '"status":"success"'; then
+          # Extract the 'data' array content (e.g., ["table0.sql","table1.sql"])
+          topological_order=$(echo "$response" | sed -n 's/.*"data":\[\([^]]*\)\].*/\1/p' | tr -d '"' | tr ',' ' ')
+        else
+          echo "Error: Failed to retrieve topological order or API returned an error"
+          echo "Response: $response"
+          exit 1
+        fi
+        
+        if [ -z "$topological_order" ]; then
+          echo "Error: Topological order is empty"
+          exit 1
+        fi
+        
+        # Step 2: Collect all SQL files in /workspace/SyncRow_Queries/app/data/test and subdirectories
+        mapfile -t all_files < <(find . -type f -name "*.sql" | sed 's|^\./||')
+        
+        # Debugging: List all found SQL files
+        echo "Found SQL files:"
+        printf '%s\n' "${all_files[@]}"
+        
+        # Step 3: Process each SQL file in the topological order
+        echo "Topological order: $topological_order"
+        for file in $topological_order; do
+          # Remove backticks and ensure .sql extension
+          clean_file=$(echo "$file" | sed 's/`//g' | sed 's/\.sql$//')
+          # Find the actual file path (including subdirectory)
+          file_path=$(find . -type f -name "${clean_file}.sql" | sed 's|^\./||')
+          
+          # Check if the file was found
+          if [ -n "$file_path" ] && [[ " ${all_files[*]} " =~ " ${file_path} " ]]; then
+            echo "Processing $file_path"
+            
+            # Read the content of the SQL file
+            sql_content=$(cat "$file_path" | sed 's/"/\\"/g' | tr '\n' ' ')
+            
+            # Create JSON payload with the actual file path
+            json_payload=$(printf '{"code": "%s", "file_path": "/app/data/test/%s", "project_name": "test"}' "$sql_content" "$file_path")
+            echo "JSON Payload: $json_payload"
+            
+            # Send to backend API
+            curl -X POST \
+              -H "Content-Type: application/json" \
+              -d "$json_payload" \
+              "$$(cat /workspace/backend_url.txt)/run-code" || {
+                echo "Error processing $file_path"
+                exit 1
+              }
+            
+            echo "Successfully processed $file_path"
+          else
+            echo "Error: File ${clean_file}.sql not found in /workspace/SyncRow_Queries/app/data/test"
+            exit 1
+          fi
+        done
+    waitFor: ['get-backend-url']
+
+# Define secrets (GitHub token stored in Secret Manager)
+availableSecrets:
+  secretManager:
+  - versionName: projects/$_PROJECT_ID/secrets/github-token/versions/1
+    env: '_GITHUB_TOKEN'
+
+# Substitutions for customizable variables
+substitutions:
+  _GITHUB_USERNAME: 'KammounEmna'
+  _QUERIES_REPO: 'KammounEmna/SyncRow_Queries'
+  _QUERIES_BRANCH: 'production'
+  _BACKEND_SERVICE_NAME: 'backend-service'
+  _REGION: 'us-west1'
+  _PROJECT_ID: 'qwiklabs-gcp-00-f3a144498f03'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
