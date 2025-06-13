@@ -14,6 +14,9 @@ CREATE TABLE `{project_id}.{schema}.employees` (
 
 
 
+
+
+
 INSERT INTO `{project_id}.{schema}.employees` (id, name, department, salary, hire_date)
 VALUES
   (1, 'Alice', 'IT', 4500, DATE '2020-03-01'),
