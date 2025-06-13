@@ -1,0 +1,13 @@
+SyncRow_Queries:
+  default: dev
+  outputs:
+    dev:
+      Project_id: qwiklabs-gcp-02-60d2fbaab4aa
+      role: dev
+      schema: dev
+      user: dev_user
+    prod:
+      Project_id: qwiklabs-gcp-02-60d2fbaab4aa
+      role: prod_role
+      schema: prod
+      user: prod_user
